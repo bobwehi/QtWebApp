@@ -34,6 +34,7 @@ HttpListener::~HttpListener()
 
 void HttpListener::listen()
 {
+    run = true;
     if (!pool)
     {
         pool=new HttpConnectionHandlerPool(settings,requestHandler);
@@ -50,41 +51,93 @@ void HttpListener::listen()
     }
 }
 
+void HttpListener::stop()
+{
+   run = false;
+}
 
 void HttpListener::close() {
-    QTcpServer::close();
-    qDebug("HttpListener: closed");
-    if (pool) {
-        delete pool;
-        pool=NULL;
+
+    try
+    {
+        poolMutex.lockForWrite();
+        QTcpServer::close();
+        qDebug("HttpListener: closed");
+        if (pool) {
+            delete pool;
+            pool=NULL;
+        }
+        poolMutex.unlock();
+    }
+    catch (...)
+    {
+        poolMutex.unlock();
+        qCritical("HttpListener (%p): An uncatched exception occured in close method", this);
+        throw;
     }
 }
 
 void HttpListener::incomingConnection(tSocketDescriptor socketDescriptor) {
 #ifdef SUPERVERBOSE
-    qDebug("HttpListener: New connection");
+   qDebug("HttpListener: New connection");
 #endif
 
-    HttpConnectionHandler* freeHandler=NULL;
-    if (pool)
+    bool serviceAvailable = false;
+    if (run)
     {
-        freeHandler=pool->getConnectionHandler();
+       try
+       {
+          poolMutex.lockForRead();
+          if (isListening())
+          {
+             serviceAvailable = true;
+             HttpConnectionHandler* freeHandler=NULL;
+             if (pool)
+             {
+                freeHandler=pool->getConnectionHandler();
+             }
+
+             // Let the handler process the new connection.
+             if (freeHandler)
+             {
+                // The descriptor is passed via event queue because the handler lives in another thread
+                QMetaObject::invokeMethod(freeHandler, "handleConnection", Qt::QueuedConnection, Q_ARG(tSocketDescriptor, socketDescriptor));
+             }
+             else
+             {
+                // Reject the connection
+                qDebug("HttpListener: Too many incoming connections");
+                QTcpSocket* socket=new QTcpSocket(this);
+                socket->setSocketDescriptor(socketDescriptor);
+                connect(socket, SIGNAL(disconnected()), socket, SLOT(deleteLater()));
+                socket->write("HTTP/1.1 503 too many connections\r\nConnection: close\r\n\r\nToo many connections\r\n");
+                socket->disconnectFromHost();
+             }
+          }
+
+          poolMutex.unlock();
+       }
+       catch (...)
+       {
+          qCritical("HttpListener (%p): An uncatched exception occured in incomingConnection method", this);
+          poolMutex.unlock();
+          throw;
+       }
     }
 
-    // Let the handler process the new connection.
-    if (freeHandler)
+    if (!serviceAvailable)
     {
-        // The descriptor is passed via event queue because the handler lives in another thread
-        QMetaObject::invokeMethod(freeHandler, "handleConnection", Qt::QueuedConnection, Q_ARG(tSocketDescriptor, socketDescriptor));
-    }
-    else
-    {
-        // Reject the connection
-        qDebug("HttpListener: Too many incoming connections");
-        QTcpSocket* socket=new QTcpSocket(this);
-        socket->setSocketDescriptor(socketDescriptor);
-        connect(socket, SIGNAL(disconnected()), socket, SLOT(deleteLater()));
-        socket->write("HTTP/1.1 503 too many connections\r\nConnection: close\r\n\r\nToo many connections\r\n");
-        socket->disconnectFromHost();
+       if (!run)
+       {
+          close();
+       }
+
+       // Reject the connection
+       qDebug("HttpListener: Not listening to new connections");
+       QTcpSocket* socket=new QTcpSocket(this);
+       socket->setSocketDescriptor(socketDescriptor);
+       connect(socket, SIGNAL(disconnected()), socket, SLOT(deleteLater()));
+       socket->write("HTTP/1.1 503 Service unavailable\r\nConnection: close\r\n\r\nService unavailable\r\n");
+       socket->disconnectFromHost();
     }
 }

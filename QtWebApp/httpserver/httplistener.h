@@ -9,6 +9,7 @@
 #include <QTcpServer>
 #include <QSettings>
 #include <QBasicTimer>
+#include <QReadWriteLock>
 #include "httpglobal.h"
 #include "httpconnectionhandler.h"
 #include "httpconnectionhandlerpool.h"
@@ -69,6 +70,7 @@ public:
      then closes the connection pool.
     */
     void close();
+    void stop();
 
 protected:
 
@@ -85,6 +87,12 @@ private:
 
     /** Pool of connection handlers */
     HttpConnectionHandlerPool* pool;
+
+    /** Pool mutex */
+    QReadWriteLock poolMutex;
+
+    /** Tell the listener if we should run or not */
+    bool run;
 
 signals:
 

@@ -95,6 +95,8 @@ void HttpConnectionHandler::handleConnection(tSocketDescriptor socketDescriptor)
 
     if (!socket->setSocketDescriptor(socketDescriptor))
     {
+        // the connection will not be handled, release the handler (busy = false) so that it can be reused for another request.
+        busy = false;
         qCritical("HttpConnectionHandler (%p): cannot initialize socket: %s", this,qPrintable(socket->errorString()));
         return;
     }
